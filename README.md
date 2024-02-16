@@ -1,2 +1,2 @@
 # TestProject
- For debug and tests
+ For new prosjects / debug / testing
