@@ -1,0 +1,19 @@
+- C#: Сode Requirements & Recommendations:
+  https://habr.com/ru/amp/publications/26077/
+
+- Conventional Commits:
+  https://www.conventionalcommits.org/en/v1.0.0/
+
+- Unity Suggestions & Recommendations:
+  https://habr.com/ru/articles/309478/
+
+- MVC:
+  https://habr.com/ru/articles/281783/
+
+- Architecture of Unity Projects:
+  https://habr.com/ru/amp/publications/769044/	
+  https://github.com/vangogih/unity-empty-project-template
+  https://gist.github.com/vangogih/50950fa46fa8f91df33ad2c833f37efe#file-loadingflow
+
+- ObjectPool in Unity:
+  https://habr.com/ru/companies/otus/articles/560880/

@@ -1,0 +1,199 @@
+using System;
+using System.Collections.Generic;
+using Cysharp.Threading.Tasks;
+using CompanyName.Backend;
+using CompanyName.Backend.Core;
+using CompanyName.Runtime.Bootstrap.Services;
+using CompanyName.Runtime.Bootstrap.Units;
+using CompanyName.Runtime.Communications;
+using CompanyName.Runtime.Communications.Facebook;
+using CompanyName.Runtime.Loading.Units;
+using CompanyName.Runtime.LocalizationSystem;
+using CompanyName.Runtime.Network;
+using CompanyName.Runtime.Persistent;
+using CompanyName.Runtime.Purchase;
+using CompanyName.Runtime.Purchase.Subscriptions;
+using CompanyName.Runtime.UI;
+using CompanyName.Runtime.UI.Parts.Loading;
+using CompanyName.Runtime.UI.Popups;
+using CompanyName.Runtime.UI.Popups.Logic;
+using CompanyName.Runtime.UI.Popups.Settings;
+using CompanyName.Runtime.UI.Scenario.Logic.System;
+using CompanyName.Runtime.Utilities;
+using CompanyName.Shared.Analytics;
+using CompanyName.Shared.Models.Config;
+using CompanyName.Shared.Utils;
+using UnityEngine.SceneManagement;
+using Utils;
+using VContainer.Unity;
+
+namespace CompanyName.Runtime.Loading
+{
+    public class LoadingFlow : IStartable, ILoadingFlow
+    {
+        private readonly LoadingService _loadingService;
+        private readonly BackendCore _backendCore;
+        private readonly NetworkConfig _networkConfig;
+        private readonly ConfigsContainer _configsContainer;
+        private readonly PopupService _popupService;
+        private readonly IapService _iapService;
+        private readonly SubscriptionService _subscriptionService;
+        private readonly AnalyticsService _analyticsService;
+        private readonly MbaAppsFlyer _mbaAppsFlyer;
+        private readonly LoadingScreen _loadingScreen;
+        private readonly BackendLifetime _backendLifetime;
+
+        private UniTaskCompletionSource _authCompletionSource;
+        private UniTaskCompletionSource _configLoadedCompletionSource;
+        private UniTaskCompletionSource _cancelledCompletionSource;
+
+        public LoadingFlow(LoadingService loadingService,
+            BackendCore backendCore,
+            NetworkConfig networkConfig,
+            ConfigsContainer configsContainer,
+            PopupService popupService,
+            IapService iapService,
+            SubscriptionService subscriptionService,
+            AnalyticsService analyticsService,
+            MbaAppsFlyer mbaAppsFlyer,
+            LoadingScreen loadingScreen,
+            BackendLifetime backendLifetime)
+        {
+            _loadingService = loadingService;
+            _backendCore = backendCore;
+            _networkConfig = networkConfig;
+            _configsContainer = configsContainer;
+            _popupService = popupService;
+            _iapService = iapService;
+            _subscriptionService = subscriptionService;
+            _analyticsService = analyticsService;
+            _mbaAppsFlyer = mbaAppsFlyer;
+            _loadingScreen = loadingScreen;
+            _backendLifetime = backendLifetime;
+        }
+
+        void ILoadingFlow.AuthCompleted()
+        {
+            _authCompletionSource.TrySetResult();
+        }
+
+        async void IStartable.Start()
+        {
+            _loadingScreen.Show().Forget();
+            _loadingScreen.SetActiveLoading(true);
+            _loadingScreen.ReportLoadingProgress(0, 5);
+            
+            var getEndpointAddressUnit = new GetEndpointAddressUnit(_backendCore, _networkConfig);
+            await _loadingService.BeginLoading(getEndpointAddressUnit);
+
+            if (!getEndpointAddressUnit.IsSuccess) {
+                ShowReconnect("ethernet_problems", "reconnect_btn_text", BeginLoadingGame);
+                return;
+            }
+
+            _authCompletionSource = new UniTaskCompletionSource();
+            _configLoadedCompletionSource = new UniTaskCompletionSource();
+            _cancelledCompletionSource = new UniTaskCompletionSource();
+            _backendCore.Load.ResetConnectionStatus();
+            _backendCore.S.EstablishConnection();
+            _backendCore.C.Loading = this;
+
+            _loadingScreen.ReportLoadingProgress(1, 5);
+            int winIdx = await UniTask.WhenAny(
+                UniTask.WhenAll(_authCompletionSource.Task, _configLoadedCompletionSource.Task),
+                _cancelledCompletionSource.Task);
+
+            _authCompletionSource = null;
+            _configLoadedCompletionSource = null;
+            _cancelledCompletionSource = null;
+
+            //if cancelled
+            if (winIdx == 1)
+                return;
+
+            await _loadingService.BeginLoading(new IapServiceLoadUnit(_iapService, _popupService, _configsContainer));
+            await _loadingService.BeginLoading(_subscriptionService, _backendCore.Profile.Id);
+
+            var appsFlyerLoadUnit = new AppsFlyerLoadUnit(_backendCore, _mbaAppsFlyer);
+            var appMetricaLoadUnit = new AppMetricaLoadUnit(_backendCore);
+            var messagingNAnalyticLoadUnit = new FirebaseComponentsLoadUnit(_backendCore);
+            var devToDevLoadUnit = new DevtodevLoadUnit(_backendCore, _backendLifetime);
+            var facebookLoadUnit = new FacebookLoadUnit();
+
+            await _loadingService.BeginLoading(appsFlyerLoadUnit, true);
+            await _loadingService.BeginLoading(appMetricaLoadUnit, true);
+            await _loadingService.BeginLoading(devToDevLoadUnit, true);
+            await _loadingService.BeginLoading(messagingNAnalyticLoadUnit, true);
+            await _loadingService.BeginLoading(facebookLoadUnit, true);
+            await _loadingService.BeginLoading(_analyticsService);
+
+            AnalyticFunnel.SendFunnelEvent(FunnelEventType.Login, "user_id", _backendCore.Profile.Id);
+
+            if (_configsContainer.ConfigConstants.Battle.IsNeedUpdate()) {
+                AnalyticsService.FireEvent("need_update");
+
+                ShowReconnect("need_update_description",
+                    "need_update_btn",
+                    () =>
+                    {
+                        AnalyticsService.FireEvent("need_update_clicked");
+                        LinksOpenHelper.OpenStore();
+                        BeginLoadingGame();
+                    });
+                return;
+            }
+
+            _loadingScreen.ReportLoadingProgress(2, 5);
+            AnalyticsService.FireEvent("downloading_assets_started");
+            var loadAssets = new LoadAssets(_loadingScreen);
+            await _loadingService.BeginLoading(loadAssets);
+
+            if (!loadAssets.LastStatus.IsSuccess) {
+                if (loadAssets.LastStatus.Ex != null)
+                    Log.Loading.E("ASSETS:DOWNLOADING", loadAssets.LastStatus.Ex);
+
+                AnalyticsService.FireEvent("downloading_assets_error");
+                ShowReconnect("download_assets_error", "reconnect_btn_text", BeginLoadingGame);
+                return;
+            }
+
+            AnalyticsService.FireEvent("downloading_assets_finished");
+
+            _backendCore.Sender.SendClientAuthReady();
+        }
+
+        void ILoadingFlow.ConfigsLoaded(Dictionary<string, string> configs)
+        {
+            _configsContainer.Initialize(configs);
+            _configLoadedCompletionSource?.TrySetResult();
+        }
+
+        public void ShowLostConnectionPopup()
+        {
+            _cancelledCompletionSource?.TrySetResult();
+            ShowReconnect("reconnect_info", "reconnect_btn_text", BeginLoadingGame);
+        }
+
+        private void ShowReconnect(string msgLocKey, string btnLocKey, Action onBtnClick)
+        {
+            if (_popupService.TryFindLastPopup<ConfirmationServicePopup>(out _))
+                return;
+
+            _popupService.OpenPopup<ConfirmationServicePopup>(new ConfirmationServicePopup.Data(
+                                 Localization.Get(Area.Common, msgLocKey),
+                                 Localization.Get(Area.Common, btnLocKey),
+                                 onBtnClick, false),
+                             false)
+                         .Forget();
+
+            if (ScenarioContext.Current != null)
+                ScenarioContext.Current.SkipCurrentComplexScenarioStep = true;
+        }
+
+        public static void BeginLoadingGame()
+        {
+            ScreenLocker.I.UnlockAll();
+            SceneManager.LoadScene(RuntimeConstants.Scenes.Loading, new LoadSceneParameters(LoadSceneMode.Single, LocalPhysicsMode.None));
+        }
+    }
+}

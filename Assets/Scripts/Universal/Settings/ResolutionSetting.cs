@@ -20,6 +20,9 @@ namespace Settings
         public override bool IsMinValue { get => _currentResolutionIndex == 0; }
         public override bool IsMaxValue { get => _currentResolutionIndex == _avaliableResolutions.Length - 1; }
 
+        private int Width { get => _avaliableResolutions[_currentResolutionIndex].x; }
+        private int Height { get => _avaliableResolutions[_currentResolutionIndex].y; }
+
         public override void SetNextValue()
         {
             if (!IsMaxValue)
@@ -43,12 +46,12 @@ namespace Settings
 
         public override string GetStringValue()
         {
-            return _avaliableResolutions[_currentResolutionIndex].x + "x" + _avaliableResolutions[_currentResolutionIndex].y;
+            return Width + "x" + Height;
         }
 
         public override void Apply()
         {
-            Screen.SetResolution(_avaliableResolutions[_currentResolutionIndex].x, _avaliableResolutions[_currentResolutionIndex].y, true); // можно вкл./выкл. полноэкранный режим
+            Screen.SetResolution(Width, Height, true); // можно вкл./выкл. полноэкранный режим
 
             Save();
         }

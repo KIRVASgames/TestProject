@@ -4,8 +4,8 @@ namespace SoundSystem
 {
     public class SoundHook : MonoBehaviour
     {
-        public Sound _sound { get; private set; } 
+        public Sound Sound { get; private set; } 
 
-        public void Play() { _sound.Play(); }
+        public void Play() { Sound.Play(); }
     }
 }
